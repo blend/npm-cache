@@ -1,5 +1,6 @@
 'use strict';
 
+var async = require('async');
 var fs = require('fs-extra');
 var path = require('path');
 var logger = require('../util/logger');
@@ -7,6 +8,7 @@ var shell = require('shelljs');
 var which = require('which');
 var targz = require('tar.gz');
 var Decompress = require('decompress');
+var fsExt = require('fs-ext');
 
 
 function CacheDependencyManager (config) {
@@ -54,19 +56,23 @@ CacheDependencyManager.prototype.archiveDependencies = function (cacheDirectory,
     return error;
   }
 
-  // Make sure cache directory is created
-  fs.mkdirsSync(cacheDirectory);
+  // Make sure target file exists is created
+  fs.ensureFileSync(cachePath);
+  var fd = fs.openSync(cachePath, 'w');
+  fsExt.flockSync(fd, 'ex');
 
   new targz().compress(
     installedDirectory,
     cachePath,
     function onCompressed (compressErr) {
       if (compressErr) {
+        console.log('compress error: ' + compressErr.message);
         error = 'error tar-ing ' + installedDirectory;
         self.cacheLogError(error);
       } else {
         self.cacheLogInfo('installed and archived dependencies');
       }
+      fsExt.flockSync(fd, 'un');
       callback(error);
     }
   );
@@ -75,28 +81,49 @@ CacheDependencyManager.prototype.archiveDependencies = function (cacheDirectory,
 CacheDependencyManager.prototype.extractDependencies = function (cachePath, callback) {
   var self = this;
   var error = null;
-  var installDirectory = getAbsolutePath(this.config.installDirectory);
-  this.cacheLogInfo('clearing installed dependencies at ' + installDirectory);
-  fs.removeSync(installDirectory);
-  this.cacheLogInfo('...cleared');
-  this.cacheLogInfo('extracting dependencies from ' + cachePath);
+  var installDirectory = getAbsolutePath(self.config.installDirectory);
 
 
-  new Decompress()
-    .src(cachePath)
-    .dest(process.cwd())
-    .use(Decompress.targz())
-    .run(
-      function onExtracted (extractErr) {
-        if (extractErr) {
-          error = 'Error extracting ' + cachePath + ': ' + extractErr;
-          self.cacheLogError(error);
-        } else {
-          self.cacheLogInfo('done extracting');
-        }
-        callback(error);
+  var decompressAttempt = 0;
+  async.retry({ times: 3, interval: 5000 }, function(cb) {
+    decompressAttempt++;
+    if (decompressAttempt > 1) {
+      self.cacheLogError('decompress failed, attempting again');
+    }
+
+    self.cacheLogInfo('clearing installed dependencies at ' + installDirectory);
+    fs.removeSync(installDirectory);
+    self.cacheLogInfo('...cleared');
+    self.cacheLogInfo('extracting dependencies from ' + cachePath);
+
+    var fd = fs.openSync(cachePath, 'r');
+    async.series([
+      function(cb) {
+        async.retry({ times: 3, interval: 5000 }, function(cb) {
+          fsExt.flock(fd, 'sh', cb);
+        }, cb);
+      },
+      function(cb) {
+        new Decompress()
+          .src(cachePath)
+          .dest(process.cwd())
+          .use(Decompress.targz())
+          .run(cb);
+      },
+      function(cb) {
+        fsExt.flock(fd, 'un', cb);
       }
-    );
+    ], cb);
+  }, function(err) {
+    if (err) {
+      error = 'Error extracting ' + cachePath + ': ' + err;
+      self.cacheLogError(error);
+     } else {
+       self.cacheLogInfo('done extracting');
+     }
+
+     callback(err);
+  });
 };
 
 
