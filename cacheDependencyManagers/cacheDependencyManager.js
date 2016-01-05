@@ -10,7 +10,6 @@ var targz = require('tar.gz');
 var Decompress = require('decompress');
 var fsExt = require('fs-ext');
 
-
 function CacheDependencyManager (config) {
   this.config = config;
 }
@@ -59,6 +58,7 @@ CacheDependencyManager.prototype.archiveDependencies = function (cacheDirectory,
   // Make sure target file exists is created
   fs.ensureFileSync(cachePath);
   var fd = fs.openSync(cachePath, 'w');
+  // Attempts to grab a write-exclusive lock without a timeout.
   fsExt.flockSync(fd, 'ex');
 
   new targz().compress(
@@ -72,6 +72,7 @@ CacheDependencyManager.prototype.archiveDependencies = function (cacheDirectory,
       } else {
         self.cacheLogInfo('installed and archived dependencies');
       }
+      // TODO: How should we handle errors where the full tar file isn't created.
       fsExt.flockSync(fd, 'un');
       callback(error);
     }
@@ -82,7 +83,6 @@ CacheDependencyManager.prototype.extractDependencies = function (cachePath, call
   var self = this;
   var error = null;
   var installDirectory = getAbsolutePath(self.config.installDirectory);
-
 
   var decompressAttempt = 0;
   async.retry({ times: 3, interval: 5000 }, function(cb) {
@@ -99,9 +99,8 @@ CacheDependencyManager.prototype.extractDependencies = function (cachePath, call
     var fd = fs.openSync(cachePath, 'r');
     async.series([
       function(cb) {
-        async.retry({ times: 3, interval: 5000 }, function(cb) {
-          fsExt.flock(fd, 'sh', cb);
-        }, cb);
+        // Attempts to get a read-shared lock without a timeout.
+        fsExt.flock(fd, 'sh', cb);
       },
       function(cb) {
         new Decompress()
