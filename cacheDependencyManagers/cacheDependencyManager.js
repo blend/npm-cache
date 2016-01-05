@@ -72,7 +72,7 @@ CacheDependencyManager.prototype.archiveDependencies = function (cacheDirectory,
       } else {
         self.cacheLogInfo('installed and archived dependencies');
       }
-      // TODO: How should we handle errors where the full tar file isn't created.
+      // Unlock the file. Should we also delete if tar.gz failed?
       fsExt.flockSync(fd, 'un');
       callback(error);
     }
@@ -84,36 +84,28 @@ CacheDependencyManager.prototype.extractDependencies = function (cachePath, call
   var error = null;
   var installDirectory = getAbsolutePath(self.config.installDirectory);
 
-  var decompressAttempt = 0;
-  async.retry({ times: 3, interval: 5000 }, function(cb) {
-    decompressAttempt++;
-    if (decompressAttempt > 1) {
-      self.cacheLogError('decompress failed, attempting again');
+  self.cacheLogInfo('clearing installed dependencies at ' + installDirectory);
+  fs.removeSync(installDirectory);
+  self.cacheLogInfo('...cleared');
+  self.cacheLogInfo('extracting dependencies from ' + cachePath);
+
+  var fd = fs.openSync(cachePath, 'r');
+  async.series([
+    function(cb) {
+      // Attempts to get a read-shared lock without a timeout.
+      fsExt.flock(fd, 'sh', cb);
+    },
+    function(cb) {
+      new Decompress()
+        .src(cachePath)
+        .dest(process.cwd())
+        .use(Decompress.targz())
+        .run(cb);
+    },
+    function(cb) {
+      fsExt.flock(fd, 'un', cb);
     }
-
-    self.cacheLogInfo('clearing installed dependencies at ' + installDirectory);
-    fs.removeSync(installDirectory);
-    self.cacheLogInfo('...cleared');
-    self.cacheLogInfo('extracting dependencies from ' + cachePath);
-
-    var fd = fs.openSync(cachePath, 'r');
-    async.series([
-      function(cb) {
-        // Attempts to get a read-shared lock without a timeout.
-        fsExt.flock(fd, 'sh', cb);
-      },
-      function(cb) {
-        new Decompress()
-          .src(cachePath)
-          .dest(process.cwd())
-          .use(Decompress.targz())
-          .run(cb);
-      },
-      function(cb) {
-        fsExt.flock(fd, 'un', cb);
-      }
-    ], cb);
-  }, function(err) {
+  ], function(err) {
     if (err) {
       error = 'Error extracting ' + cachePath + ': ' + err;
       self.cacheLogError(error);
