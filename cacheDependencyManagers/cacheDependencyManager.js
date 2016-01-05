@@ -66,8 +66,7 @@ CacheDependencyManager.prototype.archiveDependencies = function (cacheDirectory,
     cachePath,
     function onCompressed (compressErr) {
       if (compressErr) {
-        console.log('compress error: ' + compressErr.message);
-        error = 'error tar-ing ' + installedDirectory;
+        error = 'error tar-ing ' + installedDirectory + ': ' + compressErr.message;
         self.cacheLogError(error);
       } else {
         self.cacheLogInfo('installed and archived dependencies');
