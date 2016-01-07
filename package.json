@@ -42,6 +42,6 @@
   },
   "preferGlobal": true,
   "bin": {
-    "npm-cache": "index.js"
+    "npm-cache-2": "index.js"
   }
 }
