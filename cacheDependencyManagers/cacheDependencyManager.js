@@ -47,35 +47,51 @@ CacheDependencyManager.prototype.installDependencies = function () {
 CacheDependencyManager.prototype.archiveDependencies = function (cacheDirectory, cachePath, callback) {
   var self = this;
   var error = null;
-  var installedDirectory = getAbsolutePath(this.config.installDirectory);
-  this.cacheLogInfo('archiving dependencies from ' + installedDirectory);
+  var installedDirectory = getAbsolutePath(self.config.installDirectory);
+  self.cacheLogInfo('archiving dependencies from ' + installedDirectory);
 
   if (!fs.existsSync(installedDirectory)) {
-    this.cacheLogInfo('skipping archive. Install directory does not exist.');
-    return error;
+    self.cacheLogInfo('skipping archive. Install directory does not exist.');
+    return callback();
   }
 
+  var tmpCachePath = cachePath + '~';
   // Make sure target file exists is created
-  fs.ensureFileSync(cachePath);
-  var fd = fs.openSync(cachePath, 'w');
+  fs.ensureFileSync(tmpCachePath);
+  var fd = fs.openSync(tmpCachePath, 'w');
   // Attempts to grab a write-exclusive lock without a timeout.
   fsExt.flockSync(fd, 'ex');
 
-  new targz().compress(
-    installedDirectory,
-    cachePath,
-    function onCompressed (compressErr) {
-      if (compressErr) {
-        error = 'error tar-ing ' + installedDirectory + ': ' + compressErr.message;
-        self.cacheLogError(error);
-      } else {
-        self.cacheLogInfo('installed and archived dependencies');
-      }
-      // Unlock the file. Should we also delete if tar.gz failed?
-      fsExt.flockSync(fd, 'un');
-      callback(error);
+  // Hack to avoid creating an archive if another build is running concurrently.
+  if (fs.existsSync(cachePath)) {
+    self.cacheLogInfo('skipping archive because target cache file already exists.');
+    return callback();
+  }
+
+  async.series([
+    function(cb) {
+      new targz().compress(
+        installedDirectory,
+        tmpCachePath,
+        function onCompressed (compressErr) {
+          if (compressErr) {
+            error = 'error tar-ing ' + installedDirectory + ': ' + compressErr.message;
+            self.cacheLogError(error);
+          } else {
+            self.cacheLogInfo('installed and archived dependencies');
+          }
+          // Unlock the file. Should we also delete if tar.gz failed?
+          cb(error);
+        }
+      );
+    },
+    function(cb) {
+      fs.rename(tmpCachePath, cachePath, cb);
+    },
+    function(cb) {
+      fsExt.flock(fd, 'un', cb);
     }
-  );
+  ], callback);
 };
 
 CacheDependencyManager.prototype.extractDependencies = function (cachePath, callback) {
@@ -149,7 +165,7 @@ CacheDependencyManager.prototype.loadDependencies = function (callback) {
   var cachePath = path.resolve(cacheDirectory, hash + '.tar.gz');
 
   // Check if local cache of dependencies exists
-  if (! this.config.forceRefresh && fs.existsSync(cachePath)) {
+  if (!this.config.forceRefresh && fs.existsSync(cachePath)) {
     this.cacheLogInfo('cache exists');
 
     // Try to extract dependencies
